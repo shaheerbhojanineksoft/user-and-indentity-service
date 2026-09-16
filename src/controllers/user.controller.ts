@@ -82,6 +82,22 @@ export const userController = authInterceptor(
           profilePicture: t.Optional(t.String()),
           country: t.Optional(t.String()),
           gender: t.Optional(t.String()),
+          // REQUIRED (validated in the service so the error stays a standard
+          // isSuccess:false envelope instead of Elysia's 422).
+          age: t.Optional(
+            t.Union([t.Number(), t.String()], {
+              description: "Required. Number (or numeric string); stored as a number.",
+            })
+          ),
+          theme: t.Optional(t.String()),
+          experience: t.Optional(t.String()),
+          // Required only while age < 18 (guardian consent); optional at 18+.
+          parentalEmail: t.Optional(t.String()),
+          // Gate for the founder auto-follow: on every hit of this endpoint we
+          // check that the value stored on the user doc is NOT already true and
+          // that this request brings it true — only then are the FOUNDER_IDS
+          // (+ the affiliate referrer) followed.
+          isFavouriteInvestmentCompleted: t.Optional(t.Boolean()),
         },
         { additionalProperties: true }
       ),
@@ -89,7 +105,13 @@ export const userController = authInterceptor(
         tags: ["Users"],
         summary: "Update the current user's profile",
         description:
-          "Updates the profile fields and, if the userName changed, also updates it in Keycloak.",
+          "Updates the profile fields and, if the userName changed, also updates it in " +
+          "Keycloak. country, age, theme and experience are REQUIRED; parentalEmail is " +
+          "required only when age is below 18. On a missing/invalid field the response " +
+          "is { isSuccess: false, message: \"<field> is required\", data: {} }. On the " +
+          "FIRST completion (flag false in Mongo + isFavouriteInvestmentCompleted true " +
+          "in the body) the FOUNDER_IDS env ids and the affiliate referrer are " +
+          "auto-followed.",
         security: [{ bearerAuth: [] }],
       },
     }

@@ -17,6 +17,21 @@ export const constants = {
   // Must match between Keycloak, the webhook sender and this service.
   KEYCLOAK_WEBHOOK_SECRET: process.env.KEYCLOAK_WEBHOOK_SECRET ?? "test",
 
+  // --- Auth mode (who verifies the user's token) ---
+  // true  (DEFAULT) → APISIX verified the token and injects `X-Userinfo`:
+  //                    the protected routes read that header (current flow).
+  // false           → no gateway in front: THIS service verifies the raw
+  //                    `Authorization: Bearer <token>` itself against Keycloak's
+  //                    JWKS and takes the identity from the VERIFIED claims.
+  //                    `X-Userinfo` is ignored completely in this mode.
+  GATEWAY_AUTH_ENABLED:
+    (process.env.GATEWAY_AUTH_ENABLED ?? "true").trim().toLowerCase() === "true",
+  // Optional overrides for direct-token mode (defaults derive from the issuer).
+  // JWKS endpoint used to verify a raw Keycloak token.
+  KEYCLOAK_JWKS_URL: process.env.KEYCLOAK_JWKS_URL ?? "",
+  // Comma separated accepted `iss` values; empty ⇒ the configured issuer only.
+  KEYCLOAK_ISSUERS: process.env.KEYCLOAK_ISSUERS ?? "",
+
   // --- Signup / security ---
   APIURL: process.env.APIURL ?? "https://profiles.traderverse.io",
   JWT_SECRET: process.env.JWT_SECRET ?? "traderverse-jwt-secret",
@@ -27,6 +42,11 @@ export const constants = {
 
   // --- Referral (Viral Loops) ---
   REFERRAL_API_TOKEN: process.env.REFERRAL_API_TOKEN ?? "",
+
+  // --- Founder auto-follow (first-time favourite-investment completion) ---
+  // Comma separated Mongo `_id`s (uuid strings), e.g. "id1,id2,id3".
+  // Empty ⇒ no founder is followed (the affiliate referrer, if any, still is).
+  FOUNDER_IDS: process.env.FOUNDER_IDS ?? "",
 
   // --- User service sync ---
   USER_SERVICE_HOST: process.env.USER_SERVICE_HOST ?? "",

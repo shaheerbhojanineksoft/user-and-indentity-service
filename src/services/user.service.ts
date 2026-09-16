@@ -29,6 +29,7 @@ import {
   registerUserFromKeycloak,
 } from "./keycloak-webhook.service";
 import { publishUserDelete, publishUserUpsert } from "./nats.publisher";
+import { followFoundersForUser } from "./follow-founders.service";
 
 // Default profile configuration — copied EXACTLY from source
 // src/auth/dto/initial-setting.ts → UserProfileConfiguration
@@ -148,6 +149,73 @@ const IGNORED_FIELDS = [
   "stats",
 ];
 
+/* ------------------------------------------------------------------ */
+/* PUT /users — new profile fields (added 2026-09-16)                  */
+/* ------------------------------------------------------------------ */
+
+/** Always required on PUT /users (trimmed, non-empty). */
+const REQUIRED_STRING_FIELDS = ["country", "theme", "experience"] as const;
+
+/**
+ * Age at/above which the user counts as an adult: `parentalEmail` is only
+ * MANDATORY while `age < 18`. At 18 or above it is optional (still stored when
+ * sent). Flip this single comparison if the rule must be "18 and below".
+ */
+const ADULT_AGE = 18;
+
+/** Trimmed string, or "" when the value is missing/not a string. */
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Accepts a number or a numeric string (frontends send both) → number | null. */
+function asAge(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Validate + normalise the new profile fields IN PLACE (trimmed strings +
+ * numeric age). Returns an error message, or "" when the payload is valid.
+ *
+ * Rules: country / age / theme / experience are REQUIRED; `parentalEmail` is
+ * required only when the user is under `ADULT_AGE` (minors need a guardian
+ * email). Validation lives here (not in the Elysia schema) so the request is
+ * rejected with the standard `{ isSuccess: false, message, data: {} }` body
+ * instead of Elysia's 422 validation envelope.
+ */
+function validateProfileFields(payload: Record<string, any>): string {
+  // 1) Required non-empty strings
+  for (const field of REQUIRED_STRING_FIELDS) {
+    const value = asTrimmedString(payload[field]);
+    if (!value) return `${field} is required`;
+    payload[field] = value;
+  }
+
+  // 2) Required age (stored as a number)
+  const age = asAge(payload.age);
+  if (age === null || age <= 0) return "age is required";
+  payload.age = age;
+
+  // 3) parentalEmail — mandatory for minors, optional for adults
+  const parentalEmail = asTrimmedString(payload.parentalEmail);
+  if (age < ADULT_AGE) {
+    if (!parentalEmail) return "parentalEmail is required for users under 18";
+    payload.parentalEmail = parentalEmail;
+  } else if (parentalEmail) {
+    payload.parentalEmail = parentalEmail;
+  } else {
+    // Adult without a guardian email — never overwrite an existing value with "".
+    delete payload.parentalEmail;
+  }
+
+  return "";
+}
+
 /**
  * Business logic for PUT /users (per source spec — exact, no improvisation).
  * Updates the logged-in user's profile, then (if the userName changed) also
@@ -156,6 +224,11 @@ const IGNORED_FIELDS = [
 export async function updateProfile(payload: Record<string, any>, currentUserId: string) {
   // 1. Drop ignored fields
   IGNORED_FIELDS.forEach((f) => delete payload[f]);
+
+  // 1b. New profile fields: country / age / theme / experience required,
+  //     parentalEmail required only under 18 (see validateProfileFields).
+  const profileError = validateProfileFields(payload);
+  if (profileError) return { isSuccess: false, message: profileError, data: {} };
 
   // 2. Fetch existing user
   const fetchUser = await findOneUser({ _id: currentUserId });
@@ -166,6 +239,18 @@ export async function updateProfile(payload: Record<string, any>, currentUserId:
     payload.userName = payload.userName.trim().toLowerCase();
     const exists = await existsUserName(payload.userName, currentUserId);
     if (exists) return { isSuccess: false, message: "userName already exists", data: {} };
+  }
+
+  // 4. Founder auto-follow — FIRST-TIME favourite-investment completion ONLY:
+  //    the value already stored on the user doc must be false in Mongo AND the
+  //    payload must send it as true. Runs BEFORE the $set so the returned
+  //    document already carries the fresh followingCount. Best-effort — a
+  //    failure here is logged and never breaks the profile update.
+  const wantsFavouriteInvestmentCompleted =
+    payload.isFavouriteInvestmentCompleted === true ||
+    payload.isFavouriteInvestmentCompleted === "true";
+  if (wantsFavouriteInvestmentCompleted && !fetchUser.isFavouriteInvestmentCompleted) {
+    await followFoundersForUser(fetchUser);
   }
 
   // 4+5. Update Mongo user, never expose password
